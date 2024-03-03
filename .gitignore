@@ -1,0 +1,17 @@
+.kdev4/
+.vscode/
+.vs/
+.cache/
+.junk/
+obj/
+
+.clangd
+*.kdev4
+*.sln
+*.vcproj
+*.vcxproj
+*.user
+
+*.sh
+*.bat
+*.cmd
