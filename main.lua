@@ -47,17 +47,52 @@ local List = class (
 local elContact = class (
 {
 	__init = function(self, value, parent)
-		self.value = value or 0 -- charge
+		self.value = value or 0 -- charge, C
 		self.parent = parent
-		self.capacity = 1
+		self.capacity = 0.1 -- F
 		self.cnt = List()
 	end,
+	volts = function(self, newvalue)
+		if not newvalue then
+			return self.value / self.capacity
+		end
+		self.value = newvalue * self.capacity
+	end,
+
+	flow = function(self, other, current, dt)
+		local delta = current * dt -- unit: C
+		print("delta: " .. delta)
+		print("before: " .. self.value .. ", " .. other.value)
+		self.value = self.value - delta;
+		other.value = other.value + delta;
+		print("after: " .. self.value .. ", " .. other.value)
+	end,
+
 	connect = function(self, other, resistance)
 		if self.cnt and other.cnt then
 			self.cnt:join(other.cnt)
 			other.cnt = self.cnt
 		end
-		self.cnt:insert({self, other, resistance or 1})
+		self.cnt:insert({self, other, resistance or 0.001})
+	end
+})
+
+local elCoil = class (
+{
+	__init = function(self, ind, res)
+		self.cnt = {
+			elContact(0, self),
+			elContact(0, self)
+		}
+		self.resist = res or 1 -- Ohm
+		self.induct = ind or 1 -- self-inductivity, H
+		self.value = 0 -- magnetic flux, Wb
+	end,
+	run = function(self, dt)
+		local v = self.cnt[1]:volts() - self.cnt[2]:volts()
+		self.value = self.value + v * dt
+		local cur = self.value / self.induct
+		self.cnt[1]:flow(self.cnt[2], cur, dt)
 	end
 })
 
@@ -66,14 +101,28 @@ local elCircuit = class (
 	__init = function(self)
 		self.pwr = elContact()
 		self.gnd = elContact()
+		self.elements = List()
 		self.cnt = {}
 	end,
 
-	index = function(self, elem)
+	index = function(self, contact, elem)
+		if elem then
+			for i, v in ipairs(elem.cnt) do
+				self:index(v)
+			end
+			return
+		elseif not contact then
+			for i, v in ipairs(self.elements) do
+				self:index(nil, v)
+			end
+			self:index(self.gnd)
+			self:index(self.pwr)
+			return
+		end
 		local new_contacts = List()
-		for i, v in ipairs(elem.cnt) do
+		for i, v in ipairs(contact.cnt) do
 			if not self.cnt[v] then
-				self.cnt[v] = true
+				self.cnt[v] = v
 				new_contacts:insert(v)
 			end
 		end
@@ -85,37 +134,62 @@ local elCircuit = class (
 
 	run = function(self, dt)
 		for k, v in pairs(self.cnt) do
-			local diff = k[1].value - k[2].value
+			local v = k[1]:volts() - k[2]:volts()
 
-			local delta = diff * dt / k[3]
-			if math.abs(delta * 2) > math.abs(diff) then
-				delta = diff * 0.5
-			end
-			k[1].value = k[1].value - delta
-			k[2].value = k[2].value + delta
+			local cur = v / k[3]
+			-- print("current: " .. cur .. ", v: " .. v)
+			k[1]:flow(k[2], cur, dt)
 		end
+		for i, v in ipairs(self.elements) do
+			v:run(dt)
+		end
+	end,
+
+	addElem = function(self, el)
+		self.elements:insert(el)
 	end
 })
 
 local circuit = elCircuit()
 
-local cnt1 = elContact()
-cnt1:connect(circuit.gnd, 3) -- 3 Ohm-equivalents
-cnt1:connect(circuit.pwr, 1) -- 1 Ohm-eq
+local coil = elCoil(0.01)
+coil.cnt[1]:connect(circuit.gnd, 0.01)
+coil.cnt[2]:connect(circuit.pwr, 0.01)
 
-circuit:index(circuit.gnd)
+circuit:addElem(coil)
+circuit:index()
 
-for i = 1, 20000 do
-	circuit.pwr.value = 1 -- 1 Volt-eq
-	circuit.gnd.value = 0
-	circuit:run(0.001)
-	if i % 1000 == 0 then
-		print (
-			"U1: " ..
-			tostring(cnt1.value - circuit.gnd.value) ..
-			" Volt-eq, U2: " ..
-			tostring(circuit.pwr.value - cnt1.value) ..
-			" Volt-eq"
-		)
+circuit.pwr.value = 1
+circuit.gnd.value = 0
+
+g_current = 0
+
+function runLoop()
+	local dt = 0.001
+
+	local charge = 0
+	for k, v in pairs(circuit.cnt) do
+		charge = charge + v[1].value
+		charge = charge + v[2].value
 	end
+	-- print("charge: " .. charge)
+
+	-- for i = 1, 50 do
+		circuit:run(dt)
+	-- end
+	local cur = 0
+	cur = cur + (circuit.pwr.value - 1)
+	cur = cur + (0 - circuit.gnd.value)
+	g_current = cur
+	print("current: " .. cur)
+
+	-- print("v2: " .. coil.cnt[2].value)
 end
+
+function checkVoltage()
+	-- return (circuit.pwr.value - circuit.gnd.value);
+	return g_current * -0.8 - 0.5
+end
+
+_G["List"] = List
+_G["circuit"] = circuit
